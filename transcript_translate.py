@@ -18,14 +18,37 @@ def convert_to_wav(file_path):
     return output_path
 
 
+def is_silent(audio_chunk, silence_threshold=-50.0):
+    """
+    Detects if an audio chunk is silent based on a dB threshold.
+    """
+    return audio_chunk.dBFS < silence_threshold
+
+
 def transcribe_chunk(chunk_file, recognizer):
     """
     Transcribes an audio chunk using SpeechRecognition.
+    Handles silence and unrecognized language.
     """
     try:
+        audio_chunk = AudioSegment.from_wav(chunk_file)
+        if is_silent(audio_chunk):
+            print(f"Skipping silent chunk: {chunk_file}")
+            return None
+
         with sr.AudioFile(chunk_file) as source:
             audio = recognizer.record(source)
-            return recognizer.recognize_google(audio, language="auto")  # Auto-detect language
+            try:
+                # Attempt to transcribe the audio with auto language detection
+                return recognizer.recognize_google(audio, language="auto")
+            except sr.UnknownValueError:
+                # Handle unrecognized language
+                print(f"Unrecognized language in chunk: {chunk_file}")
+                return "[UNRECOGNIZED]"
+            except sr.RequestError as e:
+                # Handle API request errors
+                print(f"API request error for {chunk_file}: {e}")
+                return None
     except Exception as e:
         print(f"Error during transcription for {chunk_file}: {e}")
         return None
@@ -68,6 +91,8 @@ def generate_srt_files(chunks, translations, total_audio_duration, output_prefix
     original_output_file = f"{output_prefix}_original.srt"
     with open(original_output_file, "w", encoding="utf-8") as srt_file:
         for idx, chunk in enumerate(chunks):
+            if chunk is None:  # Skip silent chunks
+                continue
             start_time = timedelta(seconds=idx * chunk_duration)
             end_time = timedelta(seconds=(idx + 1) * chunk_duration)
             srt_file.write(f"{idx + 1}\n")
@@ -79,6 +104,8 @@ def generate_srt_files(chunks, translations, total_audio_duration, output_prefix
     translated_output_file = f"{output_prefix}_{output_language}.srt"
     with open(translated_output_file, "w", encoding="utf-8") as srt_file:
         for idx, translation in enumerate(translations):
+            if translation is None:  # Skip silent chunks
+                continue
             start_time = timedelta(seconds=idx * chunk_duration)
             end_time = timedelta(seconds=(idx + 1) * chunk_duration)
             srt_file.write(f"{idx + 1}\n")
@@ -110,7 +137,7 @@ def main(video_path, chunk_duration=5, overlap=1):
         futures = {executor.submit(transcribe_chunk, chunk, recognizer): chunk for chunk in chunk_files}
         transcriptions = [future.result() for future in futures]
 
-    # Remove None values (failed transcriptions)
+    # Remove None values (failed transcriptions or silent chunks)
     transcriptions = [text for text in transcriptions if text]
 
     if not transcriptions:
@@ -137,7 +164,12 @@ def main(video_path, chunk_duration=5, overlap=1):
     # Translate transcriptions to the selected output language
     print(f"Translating transcriptions to {output_language}...")
     translator = Translator()
-    translations = [translator.translate(text, src=input_language, dest=output_language).text for text in transcriptions]
+    translations = []
+    for text in transcriptions:
+        if text == "[UNRECOGNIZED]":
+            translations.append("[UNRECOGNIZED]")  # Preserve placeholder for unrecognized chunks
+        else:
+            translations.append(translator.translate(text, src=input_language, dest=output_language).text)
 
     # Generate SRT files for the original and translated text
     generate_srt_files(transcriptions, translations, total_audio_duration, output_language=output_language)
