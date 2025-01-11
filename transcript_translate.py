@@ -4,6 +4,7 @@ import speech_recognition as sr
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 from googletrans import Translator  # Install with `pip install googletrans==4.0.0-rc1`
+from langdetect import detect  # Install with `pip install langdetect`
 
 
 def convert_to_wav(file_path):
@@ -24,7 +25,7 @@ def transcribe_chunk(chunk_file, recognizer):
     try:
         with sr.AudioFile(chunk_file) as source:
             audio = recognizer.record(source)
-            return recognizer.recognize_google(audio)
+            return recognizer.recognize_google(audio, language="auto")  # Auto-detect language
     except Exception as e:
         print(f"Error during transcription for {chunk_file}: {e}")
         return None
@@ -47,33 +48,43 @@ def split_audio_into_chunks(audio, chunk_duration_ms, overlap_ms, temp_dir="chun
     return chunk_files
 
 
-def generate_srt_files(chunks, translations, total_audio_duration, output_prefix="subtitles"):
+def detect_language(text):
     """
-    Generates two SRT files: one for the original text (English) and one for the translated text (Arabic).
+    Detects the language of the given text using langdetect.
+    """
+    try:
+        return detect(text)
+    except:
+        return "en"  # Default to English if detection fails
+
+
+def generate_srt_files(chunks, translations, total_audio_duration, output_prefix="subtitles", output_language="ar"):
+    """
+    Generates two SRT files: one for the original text and one for the translated text.
     """
     chunk_duration = total_audio_duration / len(chunks)
     
-    # Generate English SRT file
-    english_output_file = f"{output_prefix}_en.srt"
-    with open(english_output_file, "w", encoding="utf-8") as srt_file:
+    # Generate Original Language SRT file
+    original_output_file = f"{output_prefix}_original.srt"
+    with open(original_output_file, "w", encoding="utf-8") as srt_file:
         for idx, chunk in enumerate(chunks):
             start_time = timedelta(seconds=idx * chunk_duration)
             end_time = timedelta(seconds=(idx + 1) * chunk_duration)
             srt_file.write(f"{idx + 1}\n")
             srt_file.write(f"{str(start_time)[:-3]} --> {str(end_time)[:-3]}\n")
-            srt_file.write(f"{chunk}\n\n")  # Original text (English)
-    print(f"English SRT file generated: {english_output_file}")
+            srt_file.write(f"{chunk}\n\n")  # Original text
+    print(f"Original SRT file generated: {original_output_file}")
 
-    # Generate Arabic SRT file
-    arabic_output_file = f"{output_prefix}_ar.srt"
-    with open(arabic_output_file, "w", encoding="utf-8") as srt_file:
+    # Generate Translated SRT file
+    translated_output_file = f"{output_prefix}_{output_language}.srt"
+    with open(translated_output_file, "w", encoding="utf-8") as srt_file:
         for idx, translation in enumerate(translations):
             start_time = timedelta(seconds=idx * chunk_duration)
             end_time = timedelta(seconds=(idx + 1) * chunk_duration)
             srt_file.write(f"{idx + 1}\n")
             srt_file.write(f"{str(start_time)[:-3]} --> {str(end_time)[:-3]}\n")
-            srt_file.write(f"{translation}\n\n")  # Translated text (Arabic)
-    print(f"Arabic SRT file generated: {arabic_output_file}")
+            srt_file.write(f"{translation}\n\n")  # Translated text
+    print(f"Translated SRT file generated: {translated_output_file}")
 
 
 def main(video_path, chunk_duration=5, overlap=1):
@@ -106,13 +117,30 @@ def main(video_path, chunk_duration=5, overlap=1):
         print("Failed to transcribe audio. Exiting.")
         return
 
-    # Translate transcriptions to Arabic
-    print("Translating transcriptions to Arabic...")
-    translator = Translator()
-    translations = [translator.translate(text, src="en", dest="ar").text for text in transcriptions]
+    # Detect the input language from the transcribed text
+    combined_text = " ".join(transcriptions)
+    input_language = detect_language(combined_text)
+    print(f"Detected input language: {input_language}")
 
-    # Generate SRT files for English and Arabic
-    generate_srt_files(transcriptions, translations, total_audio_duration)
+    # Ask user for output language
+    print("Select the output language:")
+    print("1. German")
+    print("2. Arabic")
+    output_language_choice = int(input("Enter the number corresponding to the output language: "))
+    
+    output_languages = {
+        1: "de",
+        2: "ar"
+    }
+    output_language = output_languages.get(output_language_choice, "ar")  # Default to Arabic if invalid choice
+
+    # Translate transcriptions to the selected output language
+    print(f"Translating transcriptions to {output_language}...")
+    translator = Translator()
+    translations = [translator.translate(text, src=input_language, dest=output_language).text for text in transcriptions]
+
+    # Generate SRT files for the original and translated text
+    generate_srt_files(transcriptions, translations, total_audio_duration, output_language=output_language)
 
     # Cleanup temporary files
     for chunk_file in chunk_files:
